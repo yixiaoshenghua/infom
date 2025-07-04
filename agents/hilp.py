@@ -10,7 +10,6 @@ from torch.optim import Adam
 
 from utils.encoders import GCEncoder, encoder_modules # Assuming PyTorch versions
 from utils.networks import GCActor, GCMetricValue, GCValue # Assuming PyTorch versions
-from utils.torch_utils import ModuleDict # Assuming PyTorch compatible utils
 
 
 class HILPAgent(nn.Module):
@@ -73,7 +72,7 @@ class HILPAgent(nn.Module):
             gc_encoder=encoders.get('skill_actor'),
         )
 
-        self.networks = ModuleDict({
+        self.networks = nn.ModuleDict({
             'value': value_def, # HILP's phi network
             'target_value': copy.deepcopy(value_def),
             'skill_value': skill_value_def, # IQL V for skills
@@ -460,7 +459,10 @@ if __name__ == '__main__':
     cfg = get_config()
     cfg['encoder'] = 'mlp'
 
-    obs_dim = 10; action_dim = 4; latent_dim_val = cfg['latent_dim']; batch_size_val = cfg['batch_size']
+    obs_dim = 10 
+    action_dim = 4
+    latent_dim_val = cfg['latent_dim']
+    batch_size_val = cfg['batch_size']
     example_obs_np = np.random.randn(batch_size_val, obs_dim).astype(np.float32)
     example_act_np = np.random.randn(batch_size_val, action_dim).astype(np.float32)
     # For HILP, value_goals are observations, skills/latents are Z vectors

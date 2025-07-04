@@ -10,7 +10,6 @@ from torch.optim import Adam
 
 from utils.encoders import encoder_modules # Assuming PyTorch versions
 from utils.networks import Actor, Value # Assuming PyTorch versions
-from utils.torch_utils import ModuleDict # Assuming PyTorch compatible utils
 
 
 class IQLAgent(nn.Module):
@@ -57,7 +56,7 @@ class IQLAgent(nn.Module):
             encoder=encoders.get('actor'),
         )
 
-        self.networks = ModuleDict({
+        self.networks = nn.ModuleDict({
             'value': value_def,
             'critic': critic_def,
             'target_critic': copy.deepcopy(critic_def), # Target network for Q-function

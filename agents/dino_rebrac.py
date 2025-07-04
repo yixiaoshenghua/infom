@@ -8,9 +8,9 @@ from typing import Any, Dict, Tuple, Optional
 
 from utils.torch_utils import to_torch, to_numpy
 from utils.networks import Actor, Value, Param # PyTorch versions
-from utils.encoders import encoder_modules_torch # PyTorch versions
+from utils.encoders import encoder_modules # PyTorch versions
 
-class DINOReBRACAgentPytorch(nn.Module):
+class DINOReBRACAgent(nn.Module):
     def __init__(self, config: ml_collections.ConfigDict, ex_observations: torch.Tensor, ex_actions: torch.Tensor, seed: int = 42):
         super().__init__()
         self.config = config
@@ -40,7 +40,7 @@ class DINOReBRACAgentPytorch(nn.Module):
 
 
             try:
-                _temp_encoder = encoder_modules_torch[config.encoder](**encoder_fn_args)
+                _temp_encoder = encoder_modules[config.encoder](**encoder_fn_args)
                 _temp_encoder.to(self.device)
                 encoder_output_dim = _temp_encoder(obs_example_for_encoder).shape[-1]
             except Exception as e:
@@ -49,7 +49,7 @@ class DINOReBRACAgentPytorch(nn.Module):
         else:
             raise ValueError("DINOReBRAC requires an encoder.")
 
-        online_encoder = encoder_modules_torch[config.encoder](**encoder_fn_args).to(self.device)
+        online_encoder = encoder_modules[config.encoder](**encoder_fn_args).to(self.device)
 
         critic_mlp_input_dim = encoder_output_dim + action_dim # Critic's MLP takes encoded_obs + actions
         actor_mlp_input_dim = encoder_output_dim # Actor's MLP takes encoded_obs

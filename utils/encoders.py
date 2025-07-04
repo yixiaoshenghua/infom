@@ -1,5 +1,5 @@
 import functools
-from typing import Any, Callable, Sequence, Tuple, Optional
+from typing import Any, Callable, Sequence, Tuple, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -422,8 +422,8 @@ def create_resnet_encoder(in_channels: int, stage_sizes: Sequence[int]=(3,4,6,3)
 
 # The encoder_modules dictionary will now store functions that can be called
 # with appropriate dimensions (e.g., in_channels, input_dim) to instantiate encoders.
-encoder_modules_torch = {
-    'mlp': create_mlp_encoder, # User needs to call: encoder_modules_torch['mlp'](input_dim=obs_spec.shape[0])
+encoder_modules = {
+    'mlp': create_mlp_encoder, # User needs to call: encoder_modules['mlp'](input_dim=obs_spec.shape[0])
     'impala': functools.partial(create_impala_encoder), # User passes in_channels, mlp_input_dim_after_conv, etc.
     'impala_debug': functools.partial(create_impala_encoder, num_blocks=1, stack_sizes=(4, 4)),
     'impala_small': functools.partial(create_impala_encoder, num_blocks=1),
@@ -433,7 +433,7 @@ encoder_modules_torch = {
 }
 
 # Example of how GCEncoder might be used (assuming PyTorch modules for sub-encoders)
-# state_enc = encoder_modules_torch['mlp'](input_dim=obs_dim)
-# goal_enc = encoder_modules_torch['mlp'](input_dim=goal_dim)
+# state_enc = encoder_modules['mlp'](input_dim=obs_dim)
+# goal_enc = encoder_modules['mlp'](input_dim=goal_dim)
 # gc_enc = GCEncoder(state_encoder=state_enc, goal_encoder=goal_enc)
 # combined_features = gc_enc(observations, goals)

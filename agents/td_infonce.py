@@ -10,7 +10,6 @@ from torch.optim import Adam
 
 from utils.encoders import encoder_modules, GCEncoder # Assuming PyTorch versions
 from utils.networks import GCActor, GCBilinearValue, Value # Assuming PyTorch versions
-from utils.torch_utils import ModuleDict # Assuming PyTorch compatible utils
 
 
 class TDInfoNCEAgent(nn.Module):
@@ -64,7 +63,7 @@ class TDInfoNCEAgent(nn.Module):
             gc_encoder=encoders.get('actor'), # GCEncoder for actor's (s, s_g_actor) input
         )
 
-        self.networks = ModuleDict({
+        self.networks = nn.ModuleDict({
             'reward': reward_def,
             'critic': critic_def,
             'target_critic': copy.deepcopy(critic_def),
@@ -487,7 +486,9 @@ if __name__ == '__main__':
     cfg = get_config()
     # cfg['encoder'] = 'mlp'
 
-    obs_dim = 10; action_dim = 4; batch_size_val = cfg['batch_size']
+    obs_dim = 10
+    action_dim = 4
+    batch_size_val = cfg['batch_size']
     ex_obs_np = np.random.randn(batch_size_val, obs_dim).astype(np.float32)
     ex_act_np = np.random.randn(batch_size_val, action_dim).astype(np.float32)
 

@@ -10,7 +10,6 @@ from torch.optim import Adam
 
 from utils.encoders import encoder_modules # Assuming PyTorch versions
 from utils.networks import VectorField, Actor, IntentionEncoder, Value # Assuming PyTorch versions
-from utils.torch_utils import ModuleDict # Assuming PyTorch compatible utils
 
 
 class InFOMAgent(nn.Module):
@@ -89,7 +88,7 @@ class InFOMAgent(nn.Module):
             # This is tricky. Let's assume reward_def will be called with appropriately encoded obs.
         )
 
-        self.networks = ModuleDict({})
+        self.networks = nn.ModuleDict({})
         self.networks['critic'] = critic_def
         self.networks['critic_vf'] = critic_vf_def
         self.networks['target_critic_vf'] = copy.deepcopy(critic_vf_def)
@@ -575,7 +574,9 @@ if __name__ == '__main__':
     cfg = get_config()
     # cfg['encoder'] = 'mlp' # Test with and without encoder
 
-    obs_dim = 10; action_dim = 4; batch_size_val = cfg['batch_size']
+    obs_dim = 10
+    action_dim = 4
+    batch_size_val = cfg['batch_size']
     example_obs_np = np.random.randn(batch_size_val, obs_dim).astype(np.float32)
     example_act_np = np.random.randn(batch_size_val, action_dim).astype(np.float32)
 

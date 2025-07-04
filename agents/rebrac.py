@@ -9,7 +9,7 @@ import ml_collections # Keep if still used for config
 import numpy as np # For random noise, can be replaced by torch.randn
 
 # Assuming encoder_modules will be converted to PyTorch and available
-# from utils.encoders import encoder_modules_torch as encoder_modules
+# from utils.encoders import encoder_modules as encoder_modules
 # For now, let's assume encoders are passed if not None
 from utils.torch_utils import to_torch, to_numpy, set_device # Assuming these exist
 from utils.flax_utils import TrainState # This is the PyTorch version of TrainState

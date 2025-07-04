@@ -8,12 +8,12 @@ from typing import Any, Dict, Tuple, Optional
 # Assuming these utilities are in place and match the JAX versions' functionalities
 from utils.torch_utils import to_torch, to_numpy # set_device can be called by main script
 from utils.networks import Actor, Value, GCBilinearValue # PyTorch versions
-from utils.encoders import encoder_modules_torch # PyTorch versions
+from utils.encoders import encoder_modules # PyTorch versions
 # GCEncoder might be used if state_encoder/goal_encoder in GCBilinearValue are GCEncoders themselves.
 # For now, assuming base encoders are directly passed.
 
 
-class CRLInfoNCEAgentPytorch(nn.Module):
+class CRLInfoNCEAgent(nn.Module):
     def __init__(self, config: ml_collections.ConfigDict, ex_observations: torch.Tensor, ex_actions: torch.Tensor, seed: int = 42):
         super().__init__()
         self.config = config
@@ -48,7 +48,7 @@ class CRLInfoNCEAgentPytorch(nn.Module):
                 _encoder_fn_args = {} # Default args for other encoders
 
             try:
-                _temp_encoder = encoder_modules_torch[config.encoder](**_encoder_fn_args)
+                _temp_encoder = encoder_modules[config.encoder](**_encoder_fn_args)
                 _temp_encoder.to(self.device)
                 encoder_output_dim = _temp_encoder(obs_example_for_encoder).shape[-1]
             except Exception as e:
@@ -59,7 +59,7 @@ class CRLInfoNCEAgentPytorch(nn.Module):
 
             # Instantiate actual encoders
             encoders_dict = {
-                name: encoder_modules_torch[config.encoder](**_encoder_fn_args).to(self.device)
+                name: encoder_modules[config.encoder](**_encoder_fn_args).to(self.device)
                 for name in ['reward_encoder', 'critic_state_encoder', 'critic_goal_encoder', 'actor_encoder']
             }
             current_feature_dim = encoder_output_dim
