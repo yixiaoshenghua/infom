@@ -16,7 +16,7 @@ from utils.flax_utils import TrainState # This is the PyTorch version of TrainSt
 from utils.networks import Actor, Value # These are PyTorch versions
 
 
-class ReBRACAgent: # Removed (flax.struct.PyTreeNode)
+class ReBRACAgent:
     """Revisited behavior-regularized actor-critic (ReBRAC) agent (PyTorch version).
 
     ReBRAC is a variant of TD3+BC with layer normalization and separate actor and critic penalization.
@@ -26,15 +26,15 @@ class ReBRACAgent: # Removed (flax.struct.PyTreeNode)
     # network: Any -> Will be replaced by actor, critic, target_actor, target_critic, and optimizers
     # config: Any = nonpytree_field() -> config can be a normal attribute
 
-    def __init__(self,
-                 obs_dim: int,
-                 action_dim: int,
-                 config: ml_collections.ConfigDict,
-                 device: torch.device):
+    def __init__(self, config: Dict[str, Any], ex_observations_shape: Tuple, ex_actions_shape: Tuple, seed: int):
         self.config = config
-        self.device = device
-        self.action_dim = action_dim
-        self.obs_dim = obs_dim # Store obs_dim
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.action_dim = ex_actions_shape[-1]
+        self.obs_dim = ex_observations_shape[-1] # Store obs_dim
+    
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
         # Define encoders (assuming they are PyTorch nn.Modules)
         # This part needs to be adapted based on how encoders are defined and passed.
@@ -47,8 +47,8 @@ class ReBRACAgent: # Removed (flax.struct.PyTreeNode)
         #     # actor_encoder_instance = encoder_cls() # Pass relevant args if any
         #     # critic_encoder_instance = encoder_cls()
         # else:
-        actor_encoder_instance = nn.Identity().to(device)
-        critic_encoder_instance = nn.Identity().to(device)
+        actor_encoder_instance = nn.Identity().to(self.device)
+        critic_encoder_instance = nn.Identity().to(self.device)
 
 
         # Actor Network
@@ -56,10 +56,10 @@ class ReBRACAgent: # Removed (flax.struct.PyTreeNode)
         # Let's assume for now obs_dim is the feature dim after encoder.
         # If encoder is nn.Identity, then obs_dim is the raw observation dim.
         # This needs careful handling based on actual encoder output shapes.
-        actor_input_dim = obs_dim # Placeholder: adjust if encoder changes dim
+        actor_input_dim = self.obs_dim # Placeholder: adjust if encoder changes dim
         self.actor = Actor(
             input_dim=actor_input_dim,
-            action_dim=action_dim,
+            action_dim=self.action_dim,
             hidden_dims=config.actor_hidden_dims,
             layer_norm=config.actor_layer_norm,
             tanh_squash=config.tanh_squash,
@@ -67,13 +67,13 @@ class ReBRACAgent: # Removed (flax.struct.PyTreeNode)
             const_std_init=0.0, # Corresponds to const_std=True in Flax (zeros_like means)
             final_fc_init_scale=config.actor_fc_scale,
             encoder=actor_encoder_instance # Pass the instantiated encoder
-        ).to(device)
-        self.target_actor = copy.deepcopy(self.actor).to(device)
+        ).to(self.device)
+        self.target_actor = copy.deepcopy(self.actor).to(self.device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=config.lr)
 
         # Critic Network
         # Input for critic: obs_features + action_dim
-        critic_input_dim = actor_input_dim + action_dim # Placeholder
+        critic_input_dim = actor_input_dim + self.action_dim # Placeholder
         self.critic = Value(
             input_dim=critic_input_dim,
             hidden_dims=config.value_hidden_dims,
@@ -81,8 +81,8 @@ class ReBRACAgent: # Removed (flax.struct.PyTreeNode)
             layer_norm=config.value_layer_norm,
             num_ensembles=2, # ReBRAC uses 2 critics
             encoder=critic_encoder_instance # Pass the instantiated encoder
-        ).to(device)
-        self.target_critic = copy.deepcopy(self.critic).to(device)
+        ).to(self.device)
+        self.target_critic = copy.deepcopy(self.critic).to(self.device)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=config.lr)
 
         self.train_state_actor = TrainState(model=self.actor, optimizer=self.actor_optimizer)
