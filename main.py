@@ -2,11 +2,16 @@ import os
 import json
 import random
 import time
+import sys
+import pathlib
+sys.path.append(str(pathlib.Path(__file__).parent))
+sys.path.append(str(pathlib.Path(__file__).parent.parent))
+import warnings
+import logging
 
 import torch # Added
 import numpy as np
 import tqdm
-import wandb
 from absl import app, flags
 from ml_collections import config_flags
 from collections import defaultdict
@@ -17,8 +22,25 @@ from utils.datasets import GCDataset, Dataset, ReplayBuffer # May need PyTorch c
 from utils.evaluation import evaluate # Needs to be PyTorch compatible
 # Changed from flax_utils to torch_utils for save/load
 from utils.flax_utils import load_agent_components, save_agent_components
-from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_video, setup_wandb
+from utils.log_utils import Logger, get_exp_name, get_flag_dict, get_wandb_video, TerminalOutput, TensorBoardOutputPytorch, JSONLOutput
 from utils.torch_utils import set_device, to_torch, to_numpy # Added
+try:
+    import rich.traceback
+    rich.traceback.install()
+except ImportError:
+    pass
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # tensorboard
+logging.getLogger().setLevel("ERROR")
+warnings.filterwarnings("ignore", ".*box bound precision lowered.*", category=FutureWarning)
+warnings.filterwarnings("ignore", ".*")
+warnings.filterwarnings("ignore", "Conversion of an array", category=DeprecationWarning)
+
+os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
+os.environ['MUJOCO_GL'] = 'egl'
+
+
+
 
 FLAGS = flags.FLAGS
 
@@ -48,6 +70,7 @@ flags.DEFINE_string('obs_norm_type', 'normal',
 flags.DEFINE_float('p_aug', None, 'Probability of applying image augmentation.')
 flags.DEFINE_integer('num_aug', 1, 'Number of image augmentations.')
 flags.DEFINE_integer('inplace_aug', 1, 'Whether to replace the original image after applying augmentations.')
+flags.DEFINE_bool('tensorboard', True, 'Whether to use tensorboard for logging')
 flags.DEFINE_integer('frame_stack', None, 'Number of frames to stack.')
 
 config_flags.DEFINE_config_file('agent', 'agents/infom.py', lock_config=False) # Agent config file
@@ -56,19 +79,12 @@ config_flags.DEFINE_config_file('agent', 'agents/infom.py', lock_config=False) #
 def main(_):
     # Set up logger and device
     exp_name = get_exp_name(FLAGS.seed)
-    FLAGS.save_dir = os.path.join(FLAGS.save_dir, FLAGS.wandb_run_group, exp_name)
+    FLAGS.save_dir = os.path.join(FLAGS.save_dir, exp_name)
     os.makedirs(FLAGS.save_dir, exist_ok=True)
 
     device = set_device()
     print(f"Using device: {device}")
 
-    if FLAGS.enable_wandb:
-        _, trigger_sync = setup_wandb(
-            wandb_output_dir=FLAGS.save_dir,
-            project='infom_pytorch', # Consider changing project name
-            group=FLAGS.wandb_run_group, name=exp_name,
-            mode=FLAGS.wandb_mode
-        )
     flag_dict = get_flag_dict()
     with open(os.path.join(FLAGS.save_dir, 'flags.json'), 'w') as f:
         json.dump(flag_dict, f)
@@ -140,7 +156,7 @@ def main(_):
     example_batch_np = pretraining_train_dataset.sample(1)
 
     agent_class = agents[config['agent_name']]
-    # Agent's create method now expects seed, obs_np, actions_np, config
+    # Agent's create method now expects, config, obs_np, actions_np, seed
     # and returns a PyTorch agent instance.
     agent = agent_class.create(
         FLAGS.seed,
@@ -170,27 +186,31 @@ def main(_):
             print(f"Warning: Restore path {restore_file_path} not found. Training from scratch.")
 
 
-    # Train agent
-    pretraining_train_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'pretraining_train.csv'))
-    pretraining_eval_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'pretraining_eval.csv'))
-    finetuning_train_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'finetuning_train.csv'))
-    finetuning_eval_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'finetuning_eval.csv'))
+    outputs = [
+        TerminalOutput(),
+        JSONLOutput(FLAGS.save_dir),
+        # utils.TensorBoardOutputPytorch(logdir),
+    ]
+    if FLAGS.tensorboard:
+        outputs += [TensorBoardOutputPytorch(FLAGS.save_dir)]
+    logger = Logger(outputs)
 
+    # Train agent
     first_time = time.time()
     last_time = time.time()
 
     inferred_latent = None  # Only for HILP and FB.
-    # rng = jax.random.PRNGKey(FLAGS.seed)  # Removed, PyTorch uses global random state
 
     for i in tqdm.tqdm(range(1, FLAGS.pretraining_steps + FLAGS.finetuning_steps + 1), smoothing=0.1, dynamic_ncols=True):
         update_info = {}
         if i <= FLAGS.pretraining_steps:
+            logger_prefix = 'pretraining_train'
             batch_np = pretraining_train_dataset.sample(config['batch_size'])
             # Agent's pretrain method should handle numpy to torch conversion internally or accept torch tensors
             update_info = agent.pretrain(batch_np)
-            train_logger = pretraining_train_logger
-            # eval_logger = pretraining_eval_logger # Eval logger not used in pretrain loop body
+            
         else:
+            logger_prefix = 'finetuning_train'
             if i == (FLAGS.pretraining_steps + 1):
                 if hasattr(agent, 'target_reset'): # Check if agent has target_reset
                     agent.target_reset()
@@ -225,9 +245,6 @@ def main(_):
                     current_batch_np[f'model_{k_rb}'] = v_rb_np
             else:
                 current_batch_np = finetuning_train_dataset.sample(config['batch_size'])
-
-            train_logger = finetuning_train_logger
-            # eval_logger = finetuning_eval_logger # Eval logger not used in finetune loop body
 
             if config['agent_name'] in ['hilp', 'fb_repr'] and inferred_latent is not None:
                 # Batch needs to be torch tensor here for agent.finetune
@@ -288,15 +305,12 @@ def main(_):
             train_metrics['time/epoch_time'] = (time.time() - last_time) / FLAGS.log_interval
             train_metrics['time/total_time'] = time.time() - first_time
             last_time = time.time()
-            if FLAGS.enable_wandb:
-                wandb.log(train_metrics, step=i)
-                if FLAGS.wandb_mode == 'offline' and trigger_sync:
-                    trigger_sync()
-            train_logger.log(train_metrics, step=i)
+
+            logger.add(train_metrics, step=i, prefix=logger_prefix)
+            logger.write(step=i, fps=True)
 
         # Evaluate agent
-        if (FLAGS.eval_interval != 0 and (i > FLAGS.pretraining_steps)
-            and (i == (FLAGS.pretraining_steps + 1) or i % FLAGS.eval_interval == 0)):
+        if (FLAGS.eval_interval != 0 and (i > FLAGS.pretraining_steps) and (i == (FLAGS.pretraining_steps + 1) or i % FLAGS.eval_interval == 0)):
             renders = []
             eval_metrics = {}
             # evaluate function needs to be PyTorch compatible
@@ -319,21 +333,13 @@ def main(_):
                 video = get_wandb_video(renders=renders)
                 eval_metrics['video'] = video
 
-            if FLAGS.enable_wandb:
-                wandb.log(eval_metrics, step=i)
-                if FLAGS.wandb_mode == 'offline' and trigger_sync:
-                    trigger_sync()
-            eval_logger.log(eval_metrics, step=i)
+            logger.add(eval_metrics, step=i, prefix="finetuning_eval")
+            logger.write(step=i, fps=True)
 
         # Save agent
         if i % FLAGS.save_interval == 0:
             agent_state_to_save = agent.state_dict() # Get state dict from PyTorch agent
             save_agent_components(agent_state_to_save, FLAGS.save_dir, i, name_prefix=config['agent_name'])
-
-    pretraining_train_logger.close()
-    pretraining_eval_logger.close()
-    finetuning_train_logger.close()
-    finetuning_eval_logger.close()
 
 
 if __name__ == '__main__':

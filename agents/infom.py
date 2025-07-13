@@ -1,13 +1,16 @@
 import copy
 from functools import partial
 from typing import Any, Dict, Tuple
-
+import random
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
-
+import sys
+import pathlib
+sys.path.append(str(pathlib.Path(__file__).parent))
+sys.path.append(str(pathlib.Path(__file__).parent.parent))
 from utils.encoders import encoder_modules # Assuming PyTorch versions
 from utils.networks import VectorField, Actor, IntentionEncoder, Value # Assuming PyTorch versions
 
@@ -20,9 +23,13 @@ class InFOMAgent(nn.Module):
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        np.random.seed(seed)
+        random.seed(seed)
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True  # no apparent impact on speed
+            torch.backends.cudnn.benchmark = True  # faster, increases memory though.., no impact on seed
 
         action_dim = ex_actions_shape[-1]
         obs_dim_for_vf = ex_observations_shape[-1] # Default to original obs_dim
@@ -49,6 +56,7 @@ class InFOMAgent(nn.Module):
 
         # Define networks
         critic_def = Value( # Standard Q-value critic
+            input_dim=obs_dim_for_vf,
             hidden_dims=config['value_hidden_dims'],
             layer_norm=config['value_layer_norm'],
             num_ensembles=2, # Clipped Double Q
@@ -605,19 +613,25 @@ if __name__ == '__main__':
     try:
         pretrain_info = agent_pytorch.update(dummy_batch, pretrain_mode=True, step=0)
         print("Pretraining update successful. Info snippet:", {k:v for i,(k,v) in enumerate(pretrain_info.items()) if i < 3})
-    except Exception as e: import traceback; traceback.print_exc()
+    except Exception as e: 
+        import traceback
+        traceback.print_exc()
 
     print("\nTesting finetuning update (full)...")
     try:
         finetune_info = agent_pytorch.update(dummy_batch, pretrain_mode=False, step=1, full_update=True)
         print("Finetuning update successful. Info snippet:", {k:v for i,(k,v) in enumerate(finetune_info.items()) if i < 3})
-    except Exception as e: import traceback; traceback.print_exc()
+    except Exception as e: 
+        import traceback
+        traceback.print_exc()
 
     print("\nTesting action sampling...")
     try:
         actions = agent_pytorch.sample_actions(dummy_batch['observations'][:5], seed=123)
         print("Sampled actions shape:", actions.shape)
-    except Exception as e: import traceback; traceback.print_exc()
+    except Exception as e: 
+        import traceback; 
+        traceback.print_exc()
 
     print("\nBasic InFOM (PyTorch) tests completed.")
     print("NOTE: Relies on PyTorch versions of VectorField, Actor, IntentionEncoder, Value, ModuleDict and encoders.")
