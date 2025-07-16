@@ -35,7 +35,7 @@ class MLP(nn.Module):
                  input_dim: int,
                  hidden_dims: Sequence[int],
                  output_dim: Optional[int] = None,
-                 activations: Any = F.gelu, # Changed from nn.gelu to F.gelu
+                 activations: Any = nn.GELU(), 
                  activate_final: bool = False,
                  layer_norm: bool = False):
         super().__init__()
@@ -73,12 +73,12 @@ class MLP(nn.Module):
         # For simplicity, we'll skip direct sow replacement unless explicitly required later.
         # If a specific intermediate layer's output is needed, it should be handled explicitly.
         # Example: iterate through layers and store output of a specific one.
-        # for i, layer in enumerate(self.net):
-        #     x = layer(x)
-        #     if i == len(self.net) - 3 and isinstance(self.net[i+1], nn.Linear): # Before last Linear and activation/norm
-        #         self.feature = x
-        # return x
-        return self.net(x)
+        for i, layer in enumerate(self.net):
+            x = layer(x)
+            if i == len(self.net) - 3 and isinstance(self.net[i+1], nn.Linear): # Before last Linear and activation/norm
+                self.feature = x
+        return x
+        # return self.net(x)
 
 
 class Param(nn.Module):
@@ -136,6 +136,14 @@ class TanhNormal(Normal):
         ladj = self.tanh_transform.log_abs_det_jacobian(z, value) # Pass both z and value
         return base_log_prob - ladj
 
+class TanhTransformedNormal(TransformedDistribution):
+    def __init__(self, base_distribution, transforms, validate_args=None):
+        super().__init__(base_distribution, transforms, validate_args=validate_args)
+    @property
+    def mode(self):
+        # Mode of Normal is its mean. Apply transform to it.
+        # Assuming the first transform is TanhTransform
+        return self.transforms[0](self.base_dist.mean)
 
 class Value(nn.Module):
     """Value/critic network."""
@@ -289,14 +297,6 @@ class Actor(nn.Module):
             # Option 2: PyTorch's TransformedDistribution
             # Need to ensure it has .mode. TanhTransform doesn't have .mode directly.
             # The mode of Tanh(Normal(mu, sigma)) is Tanh(mu).
-            class TanhTransformedNormal(TransformedDistribution):
-                def __init__(self, base_distribution, transforms, validate_args=None):
-                    super().__init__(base_distribution, transforms, validate_args=validate_args)
-                @property
-                def mode(self):
-                    # Mode of Normal is its mean. Apply transform to it.
-                    # Assuming the first transform is TanhTransform
-                    return self.transforms[0](self.base_dist.mean)
 
             distribution = TanhTransformedNormal(distribution, TanhTransform(cache_size=1))
 
@@ -360,7 +360,9 @@ class IntentionEncoder(nn.Module):
 
 
 class VectorField(nn.Module):
-    """Flow-matching vector field function."""
+    """Flow-matching vector field function.
+    This module can be used for both value velocity field u(s, g) and critic velocity filed u(s, a, g) functions.
+    """
     def __init__(self,
                  input_dim: int, # Dimension of noisy_goals (after potential encoding)
                  time_dim: int, # Usually 1 for scalar time
@@ -518,19 +520,16 @@ class GCActor(nn.Module):
         distribution = Independent(base_dist, 1)
 
         if self.tanh_squash:
-            class TanhTransformedNormal(TransformedDistribution):
-                def __init__(self, base_distribution, transforms, validate_args=None):
-                    super().__init__(base_distribution, transforms, validate_args=validate_args)
-                @property
-                def mode(self):
-                    return self.transforms[0](self.base_dist.mean)
             distribution = TanhTransformedNormal(distribution, TanhTransform(cache_size=1))
 
         return distribution
 
 
 class GCValue(nn.Module):
-    """Goal-conditioned value/critic function."""
+    """Goal-conditioned value/critic function.
+
+    This module can be used for both value V(s, g) and critic Q(s, a, g) functions.
+    """
     def __init__(self,
                  obs_dim: int,
                  goal_dim: int,
@@ -548,13 +547,13 @@ class GCValue(nn.Module):
 
         # Determine MLP input dimension
         # This is a placeholder, actual dim depends on gc_encoder output or manual concatenation
-        mlp_input_dim_placeholder = obs_dim + goal_dim # Base for V(s,g)
+        mlp_input_dim = obs_dim + goal_dim # Base for V(s,g)
         if gc_encoder is not None and hasattr(gc_encoder, 'output_dim'):
-            mlp_input_dim_placeholder = gc_encoder.output_dim # If gc_encoder produces combined features
+            mlp_input_dim = gc_encoder.output_dim # If gc_encoder produces combined features
 
         if action_dim is not None: # For Q(s,a,g)
             if gc_encoder is None: # If no gc_encoder, actions are appended after obs,goal concat
-                 mlp_input_dim_placeholder += action_dim
+                 mlp_input_dim += action_dim
             # If gc_encoder exists, it might take actions too, or actions are appended after its output.
             # Assuming actions are appended after gc_encoder output if it doesn't take actions.
             # This needs clarification based on gc_encoder's design.
@@ -565,7 +564,7 @@ class GCValue(nn.Module):
             # if gc_encoder IS None, then feature_dim = obs_dim + goal_dim
             # And then action_dim is added to this feature_dim.
 
-            # Simplified: mlp_input_dim_placeholder is for (obs, goal) features
+            # Simplified: mlp_input_dim is for (obs, goal) features
             # action_dim will be added to it.
             if gc_encoder is None :
                 feature_dim = obs_dim + goal_dim
@@ -629,7 +628,11 @@ class GCValue(nn.Module):
 
 
 class GCBilinearValue(nn.Module):
-    """Goal-conditioned bilinear value/critic function."""
+    """Goal-conditioned bilinear value/critic function.
+    
+    This module computes the value function as V(s, g) = phi(s)^T psi(g) / sqrt(d) or the critic function as
+    Q(s, a, g) = phi(s, a)^T psi(g) / sqrt(d), where phi and psi output d-dimensional vectors.
+    """
     def __init__(self,
                  obs_action_dim: int, # Dim of (obs) or (obs,action) after state_encoder
                  goal_feat_dim: int,  # Dim of (goal) after goal_encoder

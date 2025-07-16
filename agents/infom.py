@@ -56,13 +56,15 @@ class InFOMAgent(nn.Module):
 
         # Define networks
         critic_def = Value( # Standard Q-value critic
-            input_dim=obs_dim_for_vf,
+            input_dim=obs_dim_for_vf+action_dim,
             hidden_dims=config['value_hidden_dims'],
             layer_norm=config['value_layer_norm'],
             num_ensembles=2, # Clipped Double Q
             encoder=encoders.get('critic'), # Uses original observations if encoder is None
         )
         intention_encoder_def = IntentionEncoder(
+            obs_dim=obs_dim_for_vf,
+            action_dim=action_dim,
             hidden_dims=config['intention_encoder_hidden_dims'],
             latent_dim=config['latent_dim'],
             layer_norm=config['intention_encoder_layer_norm'],
@@ -70,21 +72,28 @@ class InFOMAgent(nn.Module):
         )
         # VectorField operates on (potentially encoded) observations
         critic_vf_def = VectorField(
+            input_dim=obs_dim_for_vf,
+            time_dim=1,
             vector_dim=obs_dim_for_vf, # Dimension of the space where flow occurs
             hidden_dims=config['value_hidden_dims'], # VF hidden dims
+            obs_dim=obs_dim_for_vf,
+            action_dim=action_dim, # Actions are used for conditioning
+            latent_dim=config['latent_dim'],
             layer_norm=config['value_layer_norm'], # VF layer norm
             # Note: JAX VectorField does not take an encoder directly; it expects encoded obs if applicable.
             # The 'critic_vf_encoder' is handled upstream before calling critic_vf.
         )
         actor_def = Actor(
+            input_dim=obs_dim_for_vf,
             hidden_dims=config['actor_hidden_dims'],
             action_dim=action_dim,
             state_dependent_std=False,
             layer_norm=config['actor_layer_norm'],
-            const_std=config['const_std'],
+            const_std_init=config['const_std'],
             encoder=encoders.get('actor'), # Uses original observations
         )
         reward_def = Value( # Reward predictor
+            input_dim=obs_dim_for_vf,
             hidden_dims=config['reward_hidden_dims'],
             layer_norm=config['reward_layer_norm'],
             num_ensembles=1, # Usually single reward predictor
@@ -128,65 +137,64 @@ class InFOMAgent(nn.Module):
         return weight * (diff**2)
 
     def reward_loss(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
-        observations_orig = batch['observations'].to(self.device)
-        rewards_gt = batch['rewards'].to(self.device).squeeze(-1)
+        observations = batch['observations'].to(self.device)
+        rewards = batch['rewards'].to(self.device).squeeze(-1)
 
         # Encode observations if encoder is present (using critic_vf_encoder as per JAX logic)
         if self.config['encoder'] is not None and 'critic_vf_encoder' in self.networks:
-            processed_obs = self.networks['critic_vf_encoder'](observations_orig)
+            processed_obs = self.networks['critic_vf_encoder'](observations)
         else:
-            processed_obs = observations_orig
+            processed_obs = observations
 
         reward_preds = self.networks['reward'](processed_obs).squeeze(-1) # Value net returns (B,1) or (B,)
-        loss = F.mse_loss(reward_preds, rewards_gt)
+        loss = F.mse_loss(reward_preds, rewards)
         return loss, {'reward_loss': loss.item()}
 
     def critic_loss(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
         # This is the IQL-style critic loss for the standard Q-function
-        observations_orig = batch['observations'].to(self.device) # Original observations
+        observations = batch['observations'].to(self.device) # Original observations
         actions = batch['actions'].to(self.device)
-        next_observations_orig = batch['next_observations'].to(self.device)
+        next_observations = batch['next_observations'].to(self.device)
         next_actions = batch['next_actions'].to(self.device)
 
         # Process observations for VF and Reward net (consistent encoding)
         if self.config['encoder'] is not None and 'critic_vf_encoder' in self.networks:
-            obs_for_vf_reward = self.networks['critic_vf_encoder'](observations_orig)
-            # next_obs_for_vf_reward will be used by intention encoder, which takes original next_obs
-        else:
-            obs_for_vf_reward = observations_orig
-            # next_obs_for_vf_reward = next_observations_orig (used by intention encoder)
+            observations = self.networks['critic_vf_encoder'](observations)
+            # next_observations will be used by intention encoder, which takes original next_obs
+
+            # next_observations = next_observations (used by intention encoder)
 
         with torch.no_grad():
             # Sample noises for flow goal computation
             # Shape: (num_flow_goals, batch_size, obs_dim_for_vf)
             num_goals = self.config['num_flow_goals']
-            batch_size = obs_for_vf_reward.shape[0]
-            vf_obs_dim = obs_for_vf_reward.shape[-1]
+            batch_size = observations.shape[0]
+            vf_obs_dim = observations.shape[-1]
 
             noises = torch.randn(num_goals, batch_size, vf_obs_dim,
-                                 dtype=obs_for_vf_reward.dtype, device=self.device)
+                                 dtype=observations.dtype, device=self.device)
 
             # Sample latents z
             if self.config['critic_latent_type'] == 'prior':
-                latents_z = torch.randn(num_goals, batch_size, self.config['latent_dim'],
-                                        dtype=obs_for_vf_reward.dtype, device=self.device)
+                latents_z = torch.randn(num_goals, batch_size, self.config['latent_dim'], dtype=observations.dtype, device=self.device)
             elif self.config['critic_latent_type'] == 'encoding':
                 # Intention encoder uses original next_observations and next_actions
-                latent_dist = self.networks['intention_encoder'](next_observations_orig, next_actions)
+                latent_dist = self.networks['intention_encoder'](next_observations, next_actions)
                 latents_z = latent_dist.sample(sample_shape=(num_goals,)) # (num_goals, B, latent_dim)
             else:
                 raise ValueError(f"Unknown critic_latent_type: {self.config['critic_latent_type']}")
 
-            # Expand obs_for_vf_reward and actions for broadcasting with num_goals
-            # obs_for_vf_reward: (B, D_vf) -> (1, B, D_vf) -> (N_goals, B, D_vf)
+            # Expand observations and actions for broadcasting with num_goals
+            # observations: (B, D_vf) -> (1, B, D_vf) -> (N_goals, B, D_vf)
             # actions: (B, A_dim) -> (1, B, A_dim) -> (N_goals, B, A_dim)
             # Note: actions are used by VF, which expects original actions, not encoded.
-            expanded_obs_for_vf = obs_for_vf_reward.unsqueeze(0).expand(num_goals, -1, -1)
+            expanded_obs_for_vf = observations.unsqueeze(0).expand(num_goals, -1, -1)
             expanded_actions = actions.unsqueeze(0).expand(num_goals, -1, -1) # Original actions
 
             flow_goals = self._compute_fwd_flow_goals(
                 noises, expanded_obs_for_vf, expanded_actions, latents_z, # latents_z is (N_goals, B, latent_dim)
-                batch.get('observation_min'), batch.get('observation_max'),
+                observation_min=batch.get('observation_min', None), 
+                observation_max=batch.get('observation_max', None),
                 use_target_network=False # Use online VF for critic's target Q computation based on flow
             ) # flow_goals will be (N_goals, B, D_vf)
 
@@ -195,11 +203,11 @@ class InFOMAgent(nn.Module):
             target_q_val = (1.0 / (1.0 - self.config['discount'])) * future_rewards.mean(dim=0) # (B,)
 
         # Online Q-critic estimates Q(s,a) using original observations
-        q_online_outputs = self.networks['critic'](observations_orig, actions)
+        q_online_outputs = self.networks['critic'](observations, actions)
         if isinstance(q_online_outputs, tuple): # If Value net returns tuple for ensembles
             q1_online, q2_online = q_online_outputs
-        else: # If Value net returns (B, num_ensembles)
-            q1_online, q2_online = q_online_outputs[:,0], q_online_outputs[:,1]
+        else: # If Value net returns (num_ensembles, B)
+            q1_online, q2_online = q_online_outputs[0, :], q_online_outputs[1, :]
 
         # Expectile loss against the flow-based target Q
         # JAX code: expectile_loss(target_q - qs, target_q - qs, ...) where qs is a single tensor (mean or min of ensembles)
@@ -224,29 +232,29 @@ class InFOMAgent(nn.Module):
         }
 
     def flow_occupancy_loss(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
-        observations_orig = batch['observations'].to(self.device)
+        observations = batch['observations'].to(self.device)
         actions = batch['actions'].to(self.device)
-        next_observations_orig = batch['next_observations'].to(self.device)
+        next_observations = batch['next_observations'].to(self.device)
         next_actions = batch['next_actions'].to(self.device)
-        batch_size = observations_orig.shape[0]
+        batch_size = observations.shape[0]
 
         # Encode observations for VF
         if self.config['encoder'] is not None and 'critic_vf_encoder' in self.networks:
-            obs_for_vf = self.networks['critic_vf_encoder'](observations_orig)
+            obs_for_vf = self.networks['critic_vf_encoder'](observations)
             with torch.no_grad(): # Target encoder for next_obs
-                next_obs_for_vf = self.networks['target_critic_vf_encoder'](next_observations_orig)
+                next_obs_for_vf = self.networks['target_critic_vf_encoder'](next_observations)
         else:
-            obs_for_vf = observations_orig
-            next_obs_for_vf = next_observations_orig
+            obs_for_vf = observations
+            next_obs_for_vf = next_observations
 
         # Infer latents z from (s', a') using online intention encoder
-        latent_dist = self.networks['intention_encoder'](next_observations_orig, next_actions)
+        latent_dist = self.networks['intention_encoder'](next_observations, next_actions)
         latents_z = latent_dist.sample() # (B, latent_dim)
 
         # KL divergence loss for intention encoder
-        kl_loss = -0.5 * (1 + 2 * latent_dist.scale.log() - latent_dist.mean.pow(2) - latent_dist.scale.pow(2)).mean()
+        kl_loss = -0.5 * (1 + 2 * latent_dist.stddev.log() - latent_dist.mean.pow(2) - latent_dist.stddev.pow(2)).mean()
 
-        # SARSA^2 flow matching
+        # SARSA^2 flow matching for occupancy models
         times = torch.rand(batch_size, device=self.device, dtype=obs_for_vf.dtype) # (B,)
         current_noises = torch.randn_like(obs_for_vf) # (B, D_vf)
 
@@ -258,7 +266,7 @@ class InFOMAgent(nn.Module):
         # s_0 (obs_for_vf) and z (latents_z) are detached for VF input conditioning
         current_vf_pred = self.networks['critic_vf'](
             s_interpolated_current, times,
-            obs_for_vf.detach(), actions, latents_z.detach()
+            obs_for_vf.detach(), actions, latents_z#.detach()
         )
         # Target for current flow matching: s_0 - noise
         current_flow_target = (obs_for_vf - current_noises).detach()
@@ -276,12 +284,12 @@ class InFOMAgent(nn.Module):
             next_obs_for_vf.unsqueeze(0), # (1, B, D_vf)
             next_actions.unsqueeze(0),    # (1, B, A_dim)
             latents_z.detach().unsqueeze(0), # (1, B, latent_dim)
-            batch.get('observation_min'), batch.get('observation_max'),
+            observation_min=batch.get('observation_min', None), 
+            observation_max=batch.get('observation_max', None),
             use_target_network=True # Uses target_critic_vf inside
         ).squeeze(0) # (B, D_vf)
 
-        s_interpolated_future = times.unsqueeze(-1) * flow_future_observations + \
-                                (1 - times.unsqueeze(-1)) * future_noises # (B, D_vf)
+        s_interpolated_future = times.unsqueeze(-1) * flow_future_observations + (1 - times.unsqueeze(-1)) * future_noises # (B, D_vf)
 
         with torch.no_grad(): # Target VF for future part
             future_vf_target = self.networks['target_critic_vf'](
@@ -296,8 +304,7 @@ class InFOMAgent(nn.Module):
         )
         future_flow_matching_loss = F.mse_loss(future_vf_pred, future_vf_target, reduction='none').mean(dim=-1) # (B,)
 
-        flow_matching_loss = ((1 - self.config['discount']) * current_flow_matching_loss + \
-                               self.config['discount'] * future_flow_matching_loss).mean()
+        flow_matching_loss = ((1 - self.config['discount']) * current_flow_matching_loss + self.config['discount'] * future_flow_matching_loss).mean()
 
         neg_elbo_loss = flow_matching_loss + self.config['kl_weight'] * kl_loss
 
@@ -312,15 +319,15 @@ class InFOMAgent(nn.Module):
         }
 
     def behavioral_cloning_loss(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
-        observations_orig = batch['observations'].to(self.device) # Actor uses original observations
-        actions_gt = batch['actions'].to(self.device)
+        observations = batch['observations'].to(self.device) # Actor uses original observations
+        actions = batch['actions'].to(self.device)
 
-        dist = self.networks['actor'](observations_orig)
-        log_prob = dist.log_prob(actions_gt)
+        dist = self.networks['actor'](observations)
+        log_prob = dist.log_prob(actions)
         bc_loss = -log_prob.mean()
 
         with torch.no_grad():
-            mse = F.mse_loss(dist.mode(), actions_gt)
+            mse = F.mse_loss(dist.mode, actions)
             std_val = dist.scale.mean() if hasattr(dist, 'scale') and dist.scale is not None else torch.tensor(0.0, device=self.device)
 
         return bc_loss, {
@@ -331,21 +338,22 @@ class InFOMAgent(nn.Module):
         }
 
     def actor_loss(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
-        observations_orig = batch['observations'].to(self.device) # Actor and Critic use original observations
-        actions_gt = batch['actions'].to(self.device)
+        """Compute the DDPG + BC actor loss."""
+        observations = batch['observations'].to(self.device) # Actor and Critic use original observations
+        actions = batch['actions'].to(self.device)
 
-        dist = self.networks['actor'](observations_orig)
+        dist = self.networks['actor'](observations)
         if self.config['const_std']:
-            policy_actions = torch.clamp(dist.mode(), -1, 1)
+            policy_actions = torch.clamp(dist.mode, -1, 1)
         else:
             policy_actions = torch.clamp(dist.sample(), -1, 1) # RNG handled globally
 
         with torch.no_grad(): # Q-values are detached for actor loss
-            q_outputs = self.networks['critic'](observations_orig, policy_actions)
+            q_outputs = self.networks['critic'](observations, policy_actions)
             if isinstance(q_outputs, tuple):
                 q1, q2 = q_outputs
-            else:
-                q1, q2 = q_outputs[:,0], q_outputs[:,1]
+            else: # (num_ensembles, B)
+                q1, q2 = q_outputs[0, :], q_outputs[1, :]
 
             if self.config['q_agg'] == 'mean':
                 q_val = (q1 + q2) / 2.0
@@ -357,20 +365,20 @@ class InFOMAgent(nn.Module):
             lam = (1 / torch.abs(q_val).mean()).detach()
             q_policy_loss = lam * q_policy_loss
 
-        log_prob_bc = dist.log_prob(actions_gt) # BC against ground truth actions
-        bc_loss_term = -(self.config['alpha'] * log_prob_bc).mean()
+        log_prob_bc = dist.log_prob(actions) # BC against ground truth actions
+        bc_loss = -(self.config['alpha'] * log_prob_bc).mean()
 
-        total_actor_loss = q_policy_loss + bc_loss_term
+        total_actor_loss = q_policy_loss + bc_loss
 
         with torch.no_grad():
-            mse_val = F.mse_loss(dist.mode(), actions_gt) # mse against gt actions
+            mse_val = F.mse_loss(dist.mode, actions) # mse against gt actions
             std_val = dist.scale.mean() if hasattr(dist, 'scale') and dist.scale is not None else torch.tensor(0.0, device=self.device)
 
 
         return total_actor_loss, {
             'actor_loss': total_actor_loss.item(),
             'q_loss': q_policy_loss.item(), # Q-value part of loss
-            'bc_loss': bc_loss_term.item(), # BC part of loss
+            'bc_loss': bc_loss.item(), # BC part of loss
             'q_mean': q_val.mean().item(), # Q values for policy actions
             'q_abs_mean': torch.abs(q_val).mean().item(),
             'bc_log_prob': log_prob_bc.mean().item(), # Log prob of gt actions
@@ -446,7 +454,7 @@ class InFOMAgent(nn.Module):
 
             vf_output = vf_output.reshape(*original_shape_prefix, -1) # Reshape to (N_goals, B, D_vf) or (B, D_vf)
 
-            current_flow_states = current_flow_states + vf_output * step_size # Euler step
+            current_flow_states = current_flow_states + vf_output * step_size.unsqueeze(-1) # Euler step
 
             if self.config['clip_flow_goals'] and observation_min is not None and observation_max is not None:
                 # Ensure min/max are tensors on the correct device
@@ -492,18 +500,18 @@ class InFOMAgent(nn.Module):
 
         else: # Finetuning mode
             # Reward predictor loss
-            r_loss, r_info = self.reward_loss(batch)
+            reward_loss, r_info = self.reward_loss(batch)
             info.update({f'reward/{k}': v for k,v in r_info.items()})
 
             # IQL-style Critic loss (for standard Q-function)
-            c_loss, c_info = self.critic_loss(batch)
-            info.update({f'critic/{k}': v for k,v in c_info.items()})
+            critic_loss, critic_info = self.critic_loss(batch)
+            info.update({f'critic/{k}': v for k,v in critic_info.items()})
 
             # Flow occupancy loss (continues to train VF and Intention Encoder)
             flow_loss, flow_info = self.flow_occupancy_loss(batch)
             info.update({f'flow_occupancy/{k}': v for k,v in flow_info.items()})
 
-            total_loss = r_loss + c_loss + flow_loss
+            total_loss = reward_loss + critic_loss + flow_loss
 
             if full_update: # Corresponds to actor_freq for main actor
                 a_loss, a_info = self.actor_loss(batch)
@@ -528,27 +536,12 @@ class InFOMAgent(nn.Module):
     def sample_actions(self, observations: torch.Tensor,
                        temperature: float = 1.0, seed: int = None) -> torch.Tensor:
         self.eval()
-        observations_orig = observations.to(self.device) # Actor uses original observations
+        observations = observations.to(self.device) # Actor uses original observations
 
-        if seed is not None:
-            current_rng_state_cpu = torch.get_rng_state()
-            current_rng_state_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
-            torch.manual_seed(seed)
-            if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
-
-        if hasattr(self.networks['actor'], 'set_temperature'):
-            self.networks['actor'].set_temperature(temperature)
-        elif temperature != 1.0:
-             print(f"Warning: Actor does not support temperature setting, but temperature={temperature} was requested.")
-
-        dist = self.networks['actor'](observations_orig)
+        dist = self.networks['actor'](observations, temperature=temperature)
         actions = dist.sample()
         actions_clipped = torch.clamp(actions, -1, 1)
 
-        if seed is not None:
-            torch.set_rng_state(current_rng_state_cpu)
-            if torch.cuda.is_available() and current_rng_state_cuda:
-                torch.cuda.set_rng_state_all(current_rng_state_cuda)
         return actions_clipped.cpu()
 
     @classmethod
@@ -564,17 +557,32 @@ class InFOMAgent(nn.Module):
 def get_config():
     # Returns a plain dict for PyTorch
     return dict(
-        agent_name='infom_pytorch', lr=3e-4, batch_size=256,
+        agent_name='infom', 
+        lr=3e-4, 
+        batch_size=256,
         intention_encoder_hidden_dims=(512, 512, 512, 512),
         actor_hidden_dims=(512, 512, 512, 512),
         value_hidden_dims=(512, 512, 512, 512), # For Q-critic and VF
         reward_hidden_dims=(512, 512, 512, 512),
-        intention_encoder_layer_norm=True, value_layer_norm=True, # For Q-critic and VF
-        actor_layer_norm=False, reward_layer_norm=True,
-        latent_dim=512, discount=0.99, tau=0.005, expectile=0.9, kl_weight=0.01,
-        q_agg='min', critic_latent_type='prior', num_flow_goals=16,
-        clip_flow_goals=True, actor_freq=4, alpha=10.0, const_std=True,
-        num_flow_steps=10, normalize_q_loss=False, encoder=None,
+        intention_encoder_layer_norm=True, 
+        value_layer_norm=True, # For Q-critic and VF
+        actor_layer_norm=False, 
+        reward_layer_norm=True,
+        latent_dim=512, 
+        discount=0.99, 
+        tau=0.005, 
+        expectile=0.9,  # IQL style expectile.
+        kl_weight=0.01,
+        q_agg='min', 
+        critic_latent_type='prior', # Type of critic latents. ('prior', 'encoding')
+        num_flow_goals=16,  # Number of future flow goals for computing the target q.
+        clip_flow_goals=True, 
+        actor_freq=4,  # Actor update frequency.
+        alpha=10.0,  # BC coefficient (need to be tuned for each environment). 
+        const_std=True,
+        num_flow_steps=10, 
+        normalize_q_loss=False, 
+        encoder=None, # Encoder name ('mlp', 'impala_small', etc.).
     )
 
 if __name__ == '__main__':
