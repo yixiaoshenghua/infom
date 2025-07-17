@@ -2,9 +2,13 @@ import glob
 import multiprocessing as mp
 import os.path as osp
 import random
-
+import sys
+import os
+import pathlib
+sys.path.append(str(pathlib.Path(__file__).parent))
+sys.path.append(str(pathlib.Path(__file__).parent.parent))
 import numpy as np
-
+import tqdm
 from envs import dmc_utils
 
 
@@ -90,9 +94,9 @@ class OfflineDatasetAggregator:
 
     def load(self):
         all_eps_fns = sorted(glob.glob(osp.join(self._dataset_dir, '*.npz')))
-        assert len(all_eps_fns) > 0, "Check the exploratory datasets."
+        assert len(all_eps_fns) > 0, f"Check the exploratory datasets under {self._dataset_dir}"
         size, eps_fns = 0, []
-        for eps_fn in all_eps_fns:
+        for eps_fn in tqdm.tqdm(all_eps_fns):
             eps_idx, eps_len = [int(x.replace('.npz', '')) for x in eps_fn.split('/')[-1].split('_')[1:]]
             size += eps_len
             if size <= self._skip_size:

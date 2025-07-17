@@ -18,7 +18,7 @@ import custom_dmc_tasks as cdmc
 from utils.datasets import Dataset
 
 
-DEFAULT_DATASET_DIR = '~/.exorl/data'
+DEFAULT_DATASET_DIR = 'datasets'
 S = tp.TypeVar("S", bound="TimeStep")
 Env = tp.Union["EnvWrapper", Environment]
 

@@ -10,6 +10,7 @@ import numpy as np
 from PIL import Image, ImageEnhance
 import torch
 import time
+import cv2
 
 # class Logger:
 #     """logger for logging metrics to a CSV file and tensorboard."""
@@ -52,14 +53,6 @@ def get_exp_name(seed):
     return exp_name
 
 
-def get_flag_dict():
-    """Return the dictionary of flags."""
-    flag_dict = {k: getattr(flags.FLAGS, k) for k in flags.FLAGS if '.' not in k}
-    for k in flag_dict:
-        if isinstance(flag_dict[k], ml_collections.ConfigDict):
-            flag_dict[k] = flag_dict[k].to_dict()
-    return flag_dict
-
 
 def reshape_video(v, n_cols=None):
     """Helper function to reshape videos."""
@@ -82,8 +75,29 @@ def reshape_video(v, n_cols=None):
 
     return v
 
+def save_tensor_to_mp4(video_tensor, output_path, fps=30):
+    T, H, W, C = video_tensor.shape
+    
+    if video_tensor.dtype != np.uint8:
+        video_tensor = (video_tensor * 255).astype(np.uint8)
+    
+    # 2. 若通道顺序为RGB，则转为BGR（OpenCV要求）
+    # 如果原始数据是RGB，取消下一行的注释
+    # video_tensor = video_tensor[..., ::-1]  # RGB -> BGR
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # MP4编码器
+    video_writer = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
+    
+    if not video_writer.isOpened():
+        raise IOError("VideoWriter initialize failed")
+    
+    for frame in video_tensor: 
+        video_writer.write(frame)
+    
+    video_writer.release()
+    print(f"Video saved to {output_path}")
 
-def get_wandb_video(renders=None, n_cols=None, fps=15):
+def get_render_video(renders=None, n_cols=None, fps=15):
     """Return a Weights & Biases video.
 
     It takes a list of videos and reshapes them into a single video with the specified number of columns.
@@ -113,7 +127,7 @@ def get_wandb_video(renders=None, n_cols=None, fps=15):
 
     renders = reshape_video(renders, n_cols)  # (t, c, nr * h, nc * w)
 
-    return wandb.Video(renders, fps=fps, format='mp4')
+    return renders
 
 class Logger:
 
@@ -147,7 +161,7 @@ class Logger:
         self.add({name: value}, step)
 
     def write(self, step, fps=False):
-        fps and self.scalar("fps", self._compute_fps(step))
+        fps and self.scalar("fps", self._compute_fps(step), step=step)
         if not self._metrics:
             return
         for output in self._outputs:

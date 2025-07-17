@@ -12,7 +12,7 @@ The repository includes implementations of several offline RL agents, focusing o
 *   Modular network definitions for actors, critics, and encoders.
 *   Dataset handling utilities for offline RL datasets.
 *   Training and evaluation scripts.
-*   Logging with Weights & Biases and CSV.
+*   Logging with TensorBoard and CSV.
 
 ## Installation
 
@@ -37,11 +37,165 @@ The repository includes implementations of several offline RL agents, focusing o
 
 ## Dataset Preparation
 
-This codebase is designed to work with datasets commonly used in offline reinforcement learning (e.g., D4RL, OGBench, custom datasets).
+We provide scripts to generate datasets for pre-training and fine-tuning in the `data_gen_scripts` folder.
 
-*   **D4RL:** If using D4RL datasets, ensure you have the `d4rl` library installed and the datasets downloaded.
-*   **Custom Datasets:** Data is typically expected in a dictionary-like format where keys correspond to `observations`, `actions`, `rewards`, `next_observations`, `terminals` (or `dones`). The `utils/datasets.py` file handles loading and processing of this data. Refer to `envs/env_utils.py` for examples of how environments and datasets are registered and loaded.
-*   The `data_gen_scripts/` directory may contain scripts for downloading or generating specific datasets used by the original codebase.
+### ExORL
+
+<details>
+<summary><b>Click to expand the commands to generate ExORL datasets</b></summary>
+
+The default directory to store the datasets is `~/.exorl`.
+
+1. Download exploratory datasets
+   ```
+   ./data_gen_scripts/download.sh cheetah rnd
+   ./data_gen_scripts/download.sh walker rnd
+   ./data_gen_scripts/download.sh quadruped rnd
+   ./data_gen_scripts/download.sh jaco rnd
+   ```
+2. Generate pre-training datasets
+   ```
+   # cheetah
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=cheetah_run --save_path=~/.exorl/data/rnd_reward_free_cheetah.hdf5 --skip_size=0 --dataset_size=5_000_000 --relabel_reward=0
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=cheetah_run --save_path=~/.exorl/data/rnd_reward_free_cheetah_val.hdf5 --skip_size=5_000_000 --dataset_size=50_000 --relabel_reward=0
+   
+   # walker
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=walker_walk --save_path=/root/RL/infom/datasets/rnd_reward_free_walker.hdf5 --skip_size=0 --dataset_size=5_000_000 --relabel_reward=0 --dataset_dir=/root/RL/infom/datasets
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=walker_walk --save_path=/root/RL/infom/datasets/rnd_reward_free_walker_val.hdf5 --skip_size=5_000_000 --dataset_size=50_000 --relabel_reward=0 --dataset_dir=/root/RL/infom/datasets
+
+   # quadruped
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=quadruped_run --dataset_dir=~/.exorl/expl_datasets --save_path=~/.exorl/data/rnd_reward_free_quadruped.hdf5 --skip_size=0 --dataset_size=5_000_000 --relabel_reward=0
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=quadruped_run --dataset_dir=~/.exorl/expl_datasets --save_path=~/.exorl/data/rnd_reward_free_quadruped_val.hdf5 --skip_size=50_000 --dataset_size=500_000 --relabel_reward=0
+   
+   # jaco
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=jaco_reach_top_left --dataset_dir=~/.exorl/expl_datasets --save_path=~/.exorl/data/rnd_reward_free_jaco.hdf5 --skip_size=0 --dataset_size=5_000_000 --relabel_reward=0
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=jaco_reach_top_left --dataset_dir=~/.exorl/expl_datasets --save_path=~/.exorl/data/rnd_reward_free_jaco_val.hdf5 --skip_size=50_000 --dataset_size=500_000 --relabel_reward=0
+   ```
+3. Generate fine-tuning datasets
+   ```
+   # cheetah {run, run backward, walk, walk backward}
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=cheetah_run --save_path=~/.exorl/data/rnd_reward_labeled_cheetah_run.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=cheetah_run --save_path=~/.exorl/data/rnd_reward_labeled_cheetah_run_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=cheetah_run_backward --save_path=~/.exorl/data/rnd_reward_labeled_cheetah_run_backward.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1 --dataset_dir=/root/RL/infom/datasets
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=cheetah_run_backward --save_path=~/.exorl/data/rnd_reward_labeled_cheetah_run_backward_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1 --dataset_dir=/root/RL/infom/datasets
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=cheetah_walk --save_path=~/.exorl/data/rnd_reward_labeled_cheetah_walk.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=cheetah_walk --save_path=~/.exorl/data/rnd_reward_labeled_cheetah_walk_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=cheetah_walk_backward --save_path=~/.exorl/data/rnd_reward_labeled_cheetah_walk_backward.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=cheetah_walk_backward --save_path=~/.exorl/data/rnd_reward_labeled_cheetah_walk_backward_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   # walker {walk, run, stand, flip}
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=walker_walk --save_path=/root/RL/infom/datasets/rnd_reward_labeled_walker_walk.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1 --dataset_dir=/root/RL/infom/datasets
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=walker_walk --save_path=/root/RL/infom/datasets/rnd_reward_labeled_walker_walk_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1 --dataset_dir=/root/RL/infom/datasets
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=walker_run --save_path=~/.exorl/data/rnd_reward_labeled_walker_run.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=walker_run --save_path=~/.exorl/data/rnd_reward_labeled_walker_run_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=walker_stand --save_path=~/.exorl/data/rnd_reward_labeled_walker_stand.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=walker_stand --save_path=~/.exorl/data/rnd_reward_labeled_walker_stand_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=walker_flip --save_path=~/.exorl/data/rnd_reward_labeled_walker_flip.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=walker_flip --save_path=~/.exorl/data/rnd_reward_labeled_walker_flip_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   # quadruped {run, jump, stand, walk}
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=quadruped_run --save_path=~/.exorl/data/rnd_reward_labeled_quadruped_run.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=quadruped_run --save_path=~/.exorl/data/rnd_reward_labeled_quadruped_run_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=quadruped_jump --save_path=~/.exorl/data/rnd_reward_labeled_quadruped_jump.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=quadruped_jump --save_path=~/.exorl/data/rnd_reward_labeled_quadruped_jump_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=quadruped_stand --save_path=~/.exorl/data/rnd_reward_labeled_quadruped_stand.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=quadruped_stand --save_path=~/.exorl/data/rnd_reward_labeled_quadruped_stand_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=quadruped_walk --save_path=~/.exorl/data/rnd_reward_labeled_quadruped_walk.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=quadruped_walk --save_path=~/.exorl/data/rnd_reward_labeled_quadruped_walk_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   # jaco {reach top left, reach top right, reach bottom left, reach bottom right}
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=jaco_reach_top_left --save_path=~/.exorl/data/rnd_reward_labeled_jaco_reach_top_left.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=jaco_reach_top_left --save_path=~/.exorl/data/rnd_reward_labeled_jaco_reach_top_left_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=jaco_reach_top_right --save_path=~/.exorl/data/rnd_reward_labeled_jaco_reach_top_right.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=jaco_reach_top_right --save_path=~/.exorl/data/rnd_reward_labeled_jaco_reach_top_right_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=jaco_reach_bottom_left --save_path=~/.exorl/data/rnd_reward_labeled_jaco_reach_bottom_left.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=jaco_reach_bottom_left --save_path=~/.exorl/data/rnd_reward_labeled_jaco_reach_bottom_left_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=jaco_reach_bottom_right --save_path=~/.exorl/data/rnd_reward_labeled_jaco_reach_bottom_right.hdf5 --skip_size=5_000_000 --dataset_size=500_000 --relabel_reward=1
+   python data_gen_scripts/generate_exorl_dataset.py --env_name=jaco_reach_bottom_right --save_path=~/.exorl/data/rnd_reward_labeled_jaco_reach_bottom_right_val.hdf5 --skip_size=5_500_000 --dataset_size=50_000 --relabel_reward=1
+   ```
+
+</details>
+
+### OGBench
+
+<details>
+<summary><b>Click to expand the commands to generate OGBench datasets</b></summary>
+
+We use the default datasets in OGBench for pre-training. The following datasets will be downloaded automatically to `~/.ogbench/data` when executing the code:
+- cube single 
+  - cube-single-play-v0
+  - cube-single-play-v0-val
+- cube double 
+  - cube-double-play-v0
+  - cube-double-play-v0-val
+- scene
+  - scene-play-v0
+  - scene-play-v0-val
+- puzzle 4x4
+  - puzzle-4x4-play-v0
+  - puzzle-4x4-play-v0-val 
+- visual cube single task 1
+  - visual-cube-single-play-v0
+  - visual-cube-single-play-v0-val
+- visual cube double task 1
+  - visual-cube-double-play-v0
+  - visual-cube-double-play-v0-val
+- visual scene task 1
+  - visual-scene-play-v0
+  - visual-scene-play-v0-val
+- visual puzzle 4x4 task 1
+  - visual-puzzle-4x4-play-v0
+  - visual-puzzle-4x4-play-v0-val
+
+We generate fine-tuning datasets using following commands
+
+```
+# cube single
+python data_gen_scripts/generate_manipspace.py --env_name=cube-single-v0 --save_path=~/.ogbench/data/cube-single-play-ft-v0.npz --num_episodes=500 --max_episode_steps=1001 --dataset_type=play
+python data_gen_scripts/generate_manipspace.py --env_name=cube-single-v0 --save_path=~/.ogbench/data/cube-single-play-ft-v0-val.npz --num_episodes=50 --max_episode_steps=1001 --dataset_type=play
+
+# cube double
+python data_gen_scripts/generate_manipspace.py --env_name=cube-double-v0 --save_path=~/.ogbench/data/cube-double-play-ft-v0.npz --num_episodes=500 --max_episode_steps=1001 --dataset_type=play
+python data_gen_scripts/generate_manipspace.py --env_name=cube-double-v0 --save_path=~/.ogbench/data/cube-double-play-ft-v0-val.npz --num_episodes=50 --max_episode_steps=1001 --dataset_type=play
+
+# scene
+python data_gen_scripts/generate_manipspace.py --env_name=scene-v0 --save_path=~/.ogbench/data/scene-play-ft-v0.npz --num_episodes=500 --max_episode_steps=1001 --dataset_type=play
+python data_gen_scripts/generate_manipspace.py --env_name=scene-v0 --save_path=~/.ogbench/data/scene-play-ft-v0-val.npz --num_episodes=50 --max_episode_steps=1001 --dataset_type=play
+
+# puzzle 4x4
+python data_gen_scripts/generate_manipspace.py --env_name=puzzle-4x4-v0 --save_path=~/.ogbench/data/puzzle-4x4-play-ft-v0.npz --num_episodes=500 --max_episode_steps=1001 --dataset_type=play
+python data_gen_scripts/generate_manipspace.py --env_name=puzzle-4x4-v0 --save_path=~/.ogbench/data/puzzle-4x4-play-ft-v0-val.npz --num_episodes=50 --max_episode_steps=1001 --dataset_type=play
+
+# visual cube single task 1
+python data_gen_scripts/generate_manipspace.py --env_name=visual-cube-single-v0 --save_path=~/.ogbench/data/visual-cube-single-play-ft-v0.npz --num_episodes=500 --max_episode_steps=1001 --dataset_type=play
+python data_gen_scripts/generate_manipspace.py --env_name=visual-cube-single-v0 --save_path=~/.ogbench/data/visual-cube-single-play-ft-v0-val.npz --num_episodes=50 --max_episode_steps=1001 --dataset_type=play
+
+# visual cube double task 1
+python data_gen_scripts/generate_manipspace.py --env_name=visual-cube-double-v0 --save_path=~/.ogbench/data/visual-cube-double-play-ft-v0.npz --num_episodes=500 --max_episode_steps=1001 --dataset_type=play
+python data_gen_scripts/generate_manipspace.py --env_name=visual-cube-double-v0 --save_path=~/.ogbench/data/visual-cube-double-play-ft-v0-val.npz --num_episodes=50 --max_episode_steps=1001 --dataset_type=play
+
+# visual scene task 1
+python data_gen_scripts/generate_manipspace.py --env_name=visual-scene-v0 --save_path=~/.ogbench/data/visual-scene-play-ft-v0.npz --num_episodes=500 --max_episode_steps=1001 --dataset_type=play
+python data_gen_scripts/generate_manipspace.py --env_name=visual-scene-v0 --save_path=~/.ogbench/data/visual-scene-play-ft-v0-val.npz --num_episodes=50 --max_episode_steps=1001 --dataset_type=play
+
+# visual puzzle 4x4 task 1
+python data_gen_scripts/generate_manipspace.py --env_name=visual-puzzle-4x4-v0 --save_path=~/.ogbench/data/visual-puzzle-4x4-play-ft-v0.npz --num_episodes=500 --max_episode_steps=1001 --dataset_type=play
+python data_gen_scripts/generate_manipspace.py --env_name=visual-puzzle-4x4-v0 --save_path=~/.ogbench/data/visual-puzzle-4x4-play-ft-v0-val.npz --num_episodes=50 --max_episode_steps=1001 --dataset_type=play
+```
+
+</details>
 
 ## Usage
 
@@ -54,14 +208,14 @@ The main script for training agents is `main.py`.
 ```bash
 python main.py \
     --env_name <environment_name> \
-    --agent agents/rebrac.py \
-    --wandb_run_group <your_wandb_group> \
     --seed <random_seed> \
     --save_dir ./exp_pytorch \
     --pretraining_steps 100000 \
     --finetuning_steps 50000 \
     --log_interval 1000 \
     --eval_interval 10000
+
+MUJOCO_GL=osmesa PYOPENGL_PLATFORM="osmesa" python main.py --env-name walker_walk --seed 1 --save-dir ./logdir --pretraining-steps 1000000 --finetuning-steps 500000 --log-interval 100 --eval-interval 10000 --save-interval 500000 --video-episodes 0
 ```
 
 **Key command-line arguments for `main.py`:**

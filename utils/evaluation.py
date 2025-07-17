@@ -44,8 +44,9 @@ def evaluate(
     num_video_episodes=0,
     video_frame_skip=3,
     inferred_latent=None, # Expected to be NumPy array if provided
-    eval_temperature=0.0, # Changed default to float
-    # device=None, # Optional: device for agent if not handled internally by agent.sample_actions
+    eval_temperature=1.0, # Changed default to float
+    should_render=False,
+    device=None, # Optional: device for agent if not handled internally by agent.sample_actions
 ):
     """Evaluate the PyTorch agent in the environment."""
     # actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(np.random.randint(0, 2**32))) # Removed
@@ -65,7 +66,7 @@ def evaluate(
 
     for i in trange(num_eval_episodes + num_video_episodes):
         traj = defaultdict(list)
-        should_render = i >= num_eval_episodes
+        should_render = i >= num_eval_episodes and should_render
 
         observation, info = env.reset()
         if dataset is not None and hasattr(dataset, 'normalize_observations'):
@@ -78,12 +79,12 @@ def evaluate(
         while not done:
             # agent.sample_actions is expected to take NumPy obs and return NumPy action
             # It should handle torch.no_grad() and device internally.
-            action_args = {"observations": observation, "temperature": eval_temperature, "add_noise": False} # No exploration noise for eval
+            action_args = {"observations": observation, "temperature": eval_temperature, "add_noise": False, "eval_mode": True} # No exploration noise for eval
             if inferred_latent is not None:
                 action_args["latents"] = inferred_latent # Pass NumPy latent
 
             action = agent.sample_actions(**action_args)
-            action = np.clip(action, -1.0, 1.0) # Clip action from agent
+            action = np.clip(action, -1.0, 1.0).ravel() # Clip action from agent
 
             next_observation, reward, terminated, truncated, info = env.step(action)
             if dataset is not None and hasattr(dataset, 'normalize_observations'):
@@ -156,7 +157,7 @@ def evaluate_gc( # This function will need similar PyTorch conversion if used
     num_eval_episodes=50,
     num_video_episodes=0,
     video_frame_skip=3,
-    eval_temperature=0.0,
+    eval_temperature=1.0,
     eval_gaussian=None, # Noise std for actions
 ):
     """Evaluate the goal-conditioned PyTorch agent."""
@@ -186,7 +187,7 @@ def evaluate_gc( # This function will need similar PyTorch conversion if used
         step = 0
         current_episode_render = []
         while not done:
-            action_args = {"observations": observation, "goals": goal, "temperature": eval_temperature, "add_noise": False}
+            action_args = {"observations": observation, "goals": goal, "temperature": eval_temperature, "add_noise": False, "eval_mode": True}
             action = agent.sample_actions(**action_args) # Expected to take NumPy, return NumPy
 
             if not config.get('discrete_action', False): # Check if action space is discrete from config
@@ -256,7 +257,7 @@ def evaluate_octo( # PyTorch conversion needed if used
     num_eval_episodes=50,
     num_video_episodes=0,
     video_frame_skip=3,
-    eval_temperature=0.0,
+    eval_temperature=1.0,
 ):
     """Evaluate the Octo-style PyTorch agent."""
     trajs = []
@@ -275,7 +276,7 @@ def evaluate_octo( # PyTorch conversion needed if used
         current_episode_render = []
         while not done:
             # Octo sample_actions might take full observation dict and task
-            action_args = {"observations": observation, "tasks": env.task, "temperature": eval_temperature, "add_noise": False}
+            action_args = {"observations": observation, "tasks": env.task, "temperature": eval_temperature, "add_noise": False, "eval_mode": True}
             action = agent.sample_actions(**action_args) # Expected to take NumPy/dict, return NumPy
 
             next_observation, reward, terminated, truncated, info = env.step(action)

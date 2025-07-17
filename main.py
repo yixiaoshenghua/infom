@@ -12,17 +12,15 @@ import logging
 import torch # Added
 import numpy as np
 import tqdm
-from absl import app, flags
-from ml_collections import config_flags
 from collections import defaultdict
-
+import argparse
 from agents import agents # Should now import PyTorch agents
 from envs.env_utils import make_env_and_datasets
 from utils.datasets import GCDataset, Dataset, ReplayBuffer # May need PyTorch compatibility adjustments
 from utils.evaluation import evaluate # Needs to be PyTorch compatible
 # Changed from flax_utils to torch_utils for save/load
 from utils.flax_utils import load_agent_components, save_agent_components
-from utils.log_utils import Logger, get_exp_name, get_flag_dict, get_wandb_video, TerminalOutput, TensorBoardOutputPytorch, JSONLOutput
+from utils.log_utils import Logger, get_exp_name, get_render_video, TerminalOutput, TensorBoardOutputPytorch, JSONLOutput
 from utils.torch_utils import set_device, to_torch, to_numpy # Added
 try:
     import rich.traceback
@@ -37,74 +35,100 @@ warnings.filterwarnings("ignore", ".*")
 warnings.filterwarnings("ignore", "Conversion of an array", category=DeprecationWarning)
 
 os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
-os.environ['MUJOCO_GL'] = 'egl'
+os.environ['MUJOCO_GL'] = 'osmesa'
+
+from agents.infom import get_config # Agent specific config
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Training configuration')
+
+    # base configure
+    parser.add_argument('--seed', type=int, default=0, help='Random seed')
+    parser.add_argument('--env-name', type=str, default='walker_walk',#'cube-single-play-singletask-v0',
+                        dest='env_name', help='Environment (dataset) name')
+    parser.add_argument('--save-dir', type=str, default='logdir/',
+                        dest='save_dir', help='Save directory')
+    parser.add_argument('--restore-path', type=str, default=None,
+                        dest='restore_path', help='Restore path (exact file path to .pth)')
+    parser.add_argument('--restore-epoch', type=int, default=None,
+                        dest='restore_epoch', help='Restore epoch (used if restore_path is a dir pattern)')
+
+    # train
+    parser.add_argument('--pretraining-steps', type=int, default=1_000_000,
+                        dest='pretraining_steps', help='Number of offline steps')
+    parser.add_argument('--pretraining-size', type=int, default=1_000_000,
+                        dest='pretraining_size', help='Size of the dataset for pre-training')
+    parser.add_argument('--finetuning-steps', type=int, default=500_000,
+                        dest='finetuning_steps', help='Number of online steps')
+    parser.add_argument('--finetuning-size', type=int, default=500_000,
+                        dest='finetuning_size', help='Size of the dataset for fine-tuning')
+
+    # logging
+    parser.add_argument('--log-interval', type=int, default=5_000,
+                        dest='log_interval', help='Logging interval')
+    parser.add_argument('--eval-interval', type=int, default=50_000,
+                        dest='eval_interval', help='Evaluation interval')
+    parser.add_argument('--save-interval', type=int, default=1_500_000,
+                        dest='save_interval', help='Saving interval')
+    parser.add_argument('--eval-episodes', type=int, default=10,
+                        dest='eval_episodes', help='Number of evaluation episodes')
+    parser.add_argument('--video-episodes', type=int, default=0,
+                        dest='video_episodes', help='Number of video episodes for each task')
+    parser.add_argument('--video-frame-skip', type=int, default=3,
+                        dest='video_frame_skip', help='Frame skip for videos')
+
+    # data processing
+    parser.add_argument('--obs-norm-type', type=str, default='normal',
+                        dest='obs_norm_type', help='Observation normalization type (none, normal, bounded)')
+    parser.add_argument('--p-aug', type=float, default=None,
+                        dest='p_aug', help='Probability of applying image augmentation')
+    parser.add_argument('--num-aug', type=int, default=1,
+                        dest='num_aug', help='Number of image augmentations')
+    parser.add_argument('--inplace-aug', type=int, default=1,
+                        dest='inplace_aug', help='Whether to replace the original image after augmentations')
+
+    parser.add_argument('--tensorboard', action=argparse.BooleanOptionalAction, default=True,
+                        help='Whether to use tensorboard for logging')
+
+    parser.add_argument('--frame-stack', type=int, default=None,
+                        dest='frame_stack', help='Number of frames to stack')
+
+    args = parser.parse_args()
+    return args
 
 
-
-
-FLAGS = flags.FLAGS
-
-flags.DEFINE_integer('enable_wandb', 1, 'Whether to use wandb.')
-flags.DEFINE_string('wandb_run_group', 'debug', 'Run group.')
-flags.DEFINE_string('wandb_mode', 'online', 'Wandb mode.')
-flags.DEFINE_integer('seed', 0, 'Random seed.')
-flags.DEFINE_string('env_name', 'cube-single-play-singletask-v0', 'Environment (dataset) name.')
-flags.DEFINE_string('save_dir', 'exp/', 'Save directory.')
-flags.DEFINE_string('restore_path', None, 'Restore path (exact file path to .pth).') # Clarified
-flags.DEFINE_integer('restore_epoch', None, 'Restore epoch (used if restore_path is a dir pattern, less common now).') # Kept for now
-
-flags.DEFINE_integer('pretraining_steps', 1_000_000, 'Number of offline steps.')
-flags.DEFINE_integer('pretraining_size', 1_000_000, 'Size of the dataset for pre-training.')
-flags.DEFINE_integer('finetuning_steps', 500_000, 'Number of online steps.')
-flags.DEFINE_integer('finetuning_size', 500_000, 'Size of the dataset for fine-tuning.')
-flags.DEFINE_integer('log_interval', 5_000, 'Logging interval.')
-flags.DEFINE_integer('eval_interval', 50_000, 'Evaluation interval.')
-flags.DEFINE_integer('save_interval', 1_500_000, 'Saving interval.')
-
-flags.DEFINE_integer('eval_episodes', 50, 'Number of evaluation episodes.')
-flags.DEFINE_integer('video_episodes', 0, 'Number of video episodes for each task.')
-flags.DEFINE_integer('video_frame_skip', 3, 'Frame skip for videos.')
-
-flags.DEFINE_string('obs_norm_type', 'normal',
-                    'Type of observation normalization. (none, normal, bounded)')
-flags.DEFINE_float('p_aug', None, 'Probability of applying image augmentation.')
-flags.DEFINE_integer('num_aug', 1, 'Number of image augmentations.')
-flags.DEFINE_integer('inplace_aug', 1, 'Whether to replace the original image after applying augmentations.')
-flags.DEFINE_bool('tensorboard', True, 'Whether to use tensorboard for logging')
-flags.DEFINE_integer('frame_stack', None, 'Number of frames to stack.')
-
-config_flags.DEFINE_config_file('agent', 'agents/infom.py', lock_config=False) # Agent config file
-
-
-def main(_):
+def main():
+    args = parse_args()
+    config = get_config() # Agent specific config
     # Set up logger and device
-    exp_name = get_exp_name(FLAGS.seed)
-    FLAGS.save_dir = os.path.join(FLAGS.save_dir, exp_name)
-    os.makedirs(FLAGS.save_dir, exist_ok=True)
+    exp_name = get_exp_name(args.seed)
+    args.save_dir = os.path.join(args.save_dir, exp_name)
+    os.makedirs(args.save_dir, exist_ok=True)
 
     device = set_device()
     print(f"Using device: {device}")
 
-    flag_dict = get_flag_dict()
-    with open(os.path.join(FLAGS.save_dir, 'flags.json'), 'w') as f:
-        json.dump(flag_dict, f)
+    with open(os.path.join(args.save_dir, 'args.json'), 'w') as f:
+        saved_configs = {}
+        saved_configs.update(config)
+        saved_configs.update(vars(args))
+        json.dump(saved_configs, f, sort_keys=True, indent=4)
 
     # Set seeds
-    torch.manual_seed(FLAGS.seed)
-    np.random.seed(FLAGS.seed)
-    random.seed(FLAGS.seed)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
 
     # Make environment and datasets
-    config = FLAGS.agent # Agent specific config
     # make_env_and_datasets might need adjustment if it returns JAX arrays
     # Assuming it returns NumPy arrays which are then handled by Dataset class
     _, _, pretraining_train_dataset_np, pretraining_val_dataset_np = make_env_and_datasets(
-        FLAGS.env_name, frame_stack=FLAGS.frame_stack, max_size=FLAGS.pretraining_size, reward_free=True)
+        args.env_name, frame_stack=args.frame_stack, max_size=args.pretraining_size, reward_free=True)
     _, eval_env, finetuning_train_dataset_np, finetuning_val_dataset_np = make_env_and_datasets(
-        FLAGS.env_name, frame_stack=FLAGS.frame_stack, max_size=FLAGS.finetuning_size, reward_free=False)
+        args.env_name, frame_stack=args.frame_stack, max_size=args.finetuning_size, reward_free=False)
 
-    if FLAGS.video_episodes > 0:
-        assert 'singletask' in FLAGS.env_name, 'Rendering is currently only supported for OGBench environments.'
+    if args.video_episodes > 0:
+        assert 'singletask' in args.env_name, 'Rendering is currently only supported for OGBench environments.'
 
 
     # Set up datasets (Dataset class might need to handle PyTorch tensors or ensure conversion)
@@ -129,19 +153,19 @@ def main(_):
     for dataset_obj in [pretraining_train_dataset, pretraining_val_dataset,
                         finetuning_train_dataset, finetuning_val_dataset]:
         if dataset_obj is not None:
-            dataset_obj.obs_norm_type = FLAGS.obs_norm_type
-            dataset_obj.p_aug = FLAGS.p_aug
-            dataset_obj.num_aug = FLAGS.num_aug
-            dataset_obj.inplace_aug = FLAGS.inplace_aug
-            dataset_obj.frame_stack = FLAGS.frame_stack
+            dataset_obj.obs_norm_type = args.obs_norm_type
+            dataset_obj.p_aug = args.p_aug
+            dataset_obj.num_aug = args.num_aug
+            dataset_obj.inplace_aug = args.inplace_aug
+            dataset_obj.frame_stack = args.frame_stack
             if config['agent_name'] in ['infom', 'rebrac', 'dino_rebrac', 'mbpo_rebrac',
                                         'td_infonce', 'fb_repr_fom', 'hilp_fom']:
                 dataset_obj.return_next_actions = True
             dataset_obj.normalize_observations() # Ensure this works with NumPy/Torch as needed
 
     if config['agent_name'] in ['crl_infonce', 'td_infonce', 'hilp']:
-        config['p_aug'] = FLAGS.p_aug # Pass along to agent config
-        config['frame_stack'] = FLAGS.frame_stack
+        config['p_aug'] = args.p_aug # Pass along to agent config
+        config['frame_stack'] = args.frame_stack
         # GCDataset might need to be PyTorch compatible or return data agent can convert
         pretraining_train_dataset = GCDataset(pretraining_train_dataset, config)
         finetuning_train_dataset = GCDataset(finetuning_train_dataset, config)
@@ -159,21 +183,22 @@ def main(_):
     # Agent's create method now expects, config, obs_np, actions_np, seed
     # and returns a PyTorch agent instance.
     agent = agent_class.create(
-        FLAGS.seed,
+        args.seed,
         example_batch_np['observations'],
         example_batch_np['actions'],
         config, # Pass the agent specific config directly
+        device,
     )
     # agent.to(device) # Agent's internal components should be moved to device in its __init__
 
     # Restore agent
-    if FLAGS.restore_path is not None:
+    if args.restore_path is not None:
         # Construct the full path if restore_epoch is given and restore_path is a directory pattern
-        # For now, assume FLAGS.restore_path is the exact file path for .pth
-        restore_file_path = FLAGS.restore_path
-        if os.path.isdir(FLAGS.restore_path) and FLAGS.restore_epoch is not None:
+        # For now, assume args.restore_path is the exact file path for .pth
+        restore_file_path = args.restore_path
+        if os.path.isdir(args.restore_path) and args.restore_epoch is not None:
              # This logic might need adjustment based on how files are named by save_agent_components
-            restore_file_path = os.path.join(FLAGS.restore_path, f'agent_epoch_{FLAGS.restore_epoch}.pth')
+            restore_file_path = os.path.join(args.restore_path, f'agent_epoch_{args.restore_epoch}.pth')
 
         if os.path.isfile(restore_file_path):
             print(f"Restoring agent from {restore_file_path}")
@@ -185,14 +210,12 @@ def main(_):
         else:
             print(f"Warning: Restore path {restore_file_path} not found. Training from scratch.")
 
-
     outputs = [
         TerminalOutput(),
-        JSONLOutput(FLAGS.save_dir),
-        # utils.TensorBoardOutputPytorch(logdir),
+        JSONLOutput(args.save_dir),
     ]
-    if FLAGS.tensorboard:
-        outputs += [TensorBoardOutputPytorch(FLAGS.save_dir)]
+    if args.tensorboard:
+        outputs += [TensorBoardOutputPytorch(args.save_dir)]
     logger = Logger(outputs)
 
     # Train agent
@@ -201,17 +224,17 @@ def main(_):
 
     inferred_latent = None  # Only for HILP and FB.
 
-    for i in tqdm.tqdm(range(1, FLAGS.pretraining_steps + FLAGS.finetuning_steps + 1), smoothing=0.1, dynamic_ncols=True):
+    for i in tqdm.tqdm(range(1, args.pretraining_steps + args.finetuning_steps + 1), smoothing=0.1, dynamic_ncols=True):
         update_info = {}
-        if i <= FLAGS.pretraining_steps:
+        if i <= args.pretraining_steps:
             logger_prefix = 'pretraining_train'
             batch_np = pretraining_train_dataset.sample(config['batch_size'])
             # Agent's pretrain method should handle numpy to torch conversion internally or accept torch tensors
-            update_info = agent.pretrain(batch_np)
+            update_info = agent.update(batch_np, pretrain_mode=True, step=i)
             
         else:
             logger_prefix = 'finetuning_train'
-            if i == (FLAGS.pretraining_steps + 1):
+            if i == (args.pretraining_steps + 1):
                 if hasattr(agent, 'target_reset'): # Check if agent has target_reset
                     agent.target_reset()
 
@@ -253,10 +276,10 @@ def main(_):
                 # For consistency, let's assume agent methods take numpy and convert internally.
                 current_batch_np['latents'] = np.tile(to_numpy(inferred_latent), (current_batch_np['observations'].shape[0], 1))
 
-            update_info = agent.finetune(current_batch_np, full_update=(i % config['actor_freq'] == 0))
+            update_info = agent.update(current_batch_np, pretrain_mode=False, step=i, full_update=(i % config['actor_freq'] == 0))
 
         # MBPO imaginary rollouts (MBPO agent needs methods like sample_actions, predict_rewards, predict_next_observations)
-        if config['agent_name'] in ['mbpo_rebrac'] and (i > FLAGS.pretraining_steps) and hasattr(agent, 'predict_rewards'):
+        if config['agent_name'] in ['mbpo_rebrac'] and (i > args.pretraining_steps) and hasattr(agent, 'predict_rewards'):
             rollout_batch_np = finetuning_train_dataset.sample(config['num_model_rollouts'])
             observations_np = rollout_batch_np['observations']
             for _ in range(config['num_model_rollout_steps']):
@@ -279,7 +302,7 @@ def main(_):
                 observations_np = next_observations_np # Update for next step of rollout
 
         # Log metrics
-        if i % FLAGS.log_interval == 0 and update_info: # Ensure update_info is not empty
+        if i % args.log_interval == 0 and update_info: # Ensure update_info is not empty
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
 
             # Validation loss calculation
@@ -287,7 +310,7 @@ def main(_):
             # and grad_params is not used.
             # We need a dedicated evaluation method in the agent or skip this if too complex for now.
             # For now, commenting out the direct validation loss computation.
-            # if i <= FLAGS.pretraining_steps:
+            # if i <= args.pretraining_steps:
             #     val_dataset_current = pretraining_val_dataset
             #     # loss_fn_current = agent.pretraining_loss_eval_mode # Needs new method in agent
             # else:
@@ -302,7 +325,7 @@ def main(_):
             #     val_info = agent.evaluate_loss(val_batch_np) # Agent method returns dict of val losses
             #     train_metrics.update({f'validation/{k}': v for k, v in val_info.items()})
 
-            train_metrics['time/epoch_time'] = (time.time() - last_time) / FLAGS.log_interval
+            train_metrics['time/epoch_time'] = (time.time() - last_time) / args.log_interval
             train_metrics['time/total_time'] = time.time() - first_time
             last_time = time.time()
 
@@ -310,7 +333,7 @@ def main(_):
             logger.write(step=i, fps=True)
 
         # Evaluate agent
-        if (FLAGS.eval_interval != 0 and (i > FLAGS.pretraining_steps) and (i == (FLAGS.pretraining_steps + 1) or i % FLAGS.eval_interval == 0)):
+        if (args.eval_interval != 0 and (i > args.pretraining_steps) and (i == (args.pretraining_steps + 1) or i % args.eval_interval == 0)):
             renders = []
             eval_metrics = {}
             # evaluate function needs to be PyTorch compatible
@@ -319,28 +342,29 @@ def main(_):
                 agent=agent, # PyTorch agent
                 env=eval_env,
                 dataset=finetuning_train_dataset, # Pass dataset for normalization info
-                num_eval_episodes=FLAGS.eval_episodes,
-                num_video_episodes=FLAGS.video_episodes,
-                video_frame_skip=FLAGS.video_frame_skip,
+                num_eval_episodes=args.eval_episodes,
+                num_video_episodes=args.video_episodes,
+                video_frame_skip=args.video_frame_skip,
                 inferred_latent=to_numpy(inferred_latent) if inferred_latent is not None else None, # Pass numpy latent
-                # device=device # Pass device if evaluate needs it
+                should_render=args.video_episodes>0,
+                device=device # Pass device if evaluate needs it
             )
             renders.extend(cur_renders)
             for k, v_eval in eval_info.items():
                 eval_metrics[f'evaluation/{k}'] = v_eval
 
-            if FLAGS.video_episodes > 0 and renders: # Ensure renders is not empty
-                video = get_wandb_video(renders=renders)
+            if args.video_episodes > 0 and renders: # Ensure renders is not empty
+                video = get_render_video(renders=renders)
                 eval_metrics['video'] = video
 
             logger.add(eval_metrics, step=i, prefix="finetuning_eval")
             logger.write(step=i, fps=True)
 
         # Save agent
-        if i % FLAGS.save_interval == 0:
+        if i % args.save_interval == 0:
             agent_state_to_save = agent.state_dict() # Get state dict from PyTorch agent
-            save_agent_components(agent_state_to_save, FLAGS.save_dir, i, name_prefix=config['agent_name'])
+            save_agent_components(agent_state_to_save, args.save_dir, i, name_prefix=config['agent_name'])
 
 
 if __name__ == '__main__':
-    app.run(main)
+    main()

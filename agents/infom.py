@@ -13,15 +13,16 @@ sys.path.append(str(pathlib.Path(__file__).parent))
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
 from utils.encoders import encoder_modules # Assuming PyTorch versions
 from utils.networks import VectorField, Actor, IntentionEncoder, Value # Assuming PyTorch versions
-
+from utils.datasets import _tree_map
+from utils.torch_utils import to_torch
 
 class InFOMAgent(nn.Module):
     """Intention-Conditioned Flow Occupancy Models (InFOM) agent. PyTorch version."""
 
-    def __init__(self, config: Dict[str, Any], ex_observations_shape: Tuple, ex_actions_shape: Tuple, seed: int):
+    def __init__(self, config: Dict[str, Any], ex_observations_shape: Tuple, ex_actions_shape: Tuple, seed: int, device):
         super().__init__()
         self.config = config
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device
 
         np.random.seed(seed)
         random.seed(seed)
@@ -476,6 +477,7 @@ class InFOMAgent(nn.Module):
     def update(self, batch: Dict[str, torch.Tensor], pretrain_mode: bool, step: int, full_update: bool = True) -> Dict[str, Any]:
         self.train()
         info = {}
+        batch = _tree_map(lambda x: to_torch(x, self.device), batch)
 
         if pretrain_mode:
             # Flow occupancy loss (learns VF and Intention Encoder)
@@ -534,25 +536,31 @@ class InFOMAgent(nn.Module):
 
     @torch.no_grad()
     def sample_actions(self, observations: torch.Tensor,
-                       temperature: float = 1.0, seed: int = None) -> torch.Tensor:
+                       temperature: float = 1.0, seed: int = None, add_noise: bool = False, eval_mode=False) -> torch.Tensor:
         self.eval()
-        observations = observations.to(self.device) # Actor uses original observations
+        observations = to_torch(observations, self.device) # Actor uses original observations
+        if len(observations.shape) == 1:
+            observations = observations.reshape((-1, observations.shape[-1]))
 
         dist = self.networks['actor'](observations, temperature=temperature)
-        actions = dist.sample()
+        if eval_mode:
+            actions = dist.mean
+        else:
+            actions = dist.sample()
         actions_clipped = torch.clamp(actions, -1, 1)
 
-        return actions_clipped.cpu()
+        return actions_clipped.cpu().numpy()
 
     @classmethod
-    def create(cls, seed: int, ex_observations: np.ndarray, ex_actions: np.ndarray, config: Dict[str, Any]):
+    def create(cls, seed: int, ex_observations: np.ndarray, ex_actions: np.ndarray, config: Dict[str, Any], device):
         ex_obs_shape = ex_observations.shape
         ex_act_shape = ex_actions.shape
         plain_config = dict(config) if not isinstance(config, dict) else config
         return cls(config=plain_config,
                    ex_observations_shape=ex_obs_shape,
                    ex_actions_shape=ex_act_shape,
-                   seed=seed)
+                   seed=seed,
+                   device=device)
 
 def get_config():
     # Returns a plain dict for PyTorch
@@ -572,13 +580,13 @@ def get_config():
         discount=0.99, 
         tau=0.005, 
         expectile=0.9,  # IQL style expectile.
-        kl_weight=0.01,
+        kl_weight=0.1,
         q_agg='min', 
         critic_latent_type='prior', # Type of critic latents. ('prior', 'encoding')
         num_flow_goals=16,  # Number of future flow goals for computing the target q.
         clip_flow_goals=True, 
         actor_freq=4,  # Actor update frequency.
-        alpha=10.0,  # BC coefficient (need to be tuned for each environment). 
+        alpha=0.3,  # BC coefficient (need to be tuned for each environment). 
         const_std=True,
         num_flow_steps=10, 
         normalize_q_loss=False, 
